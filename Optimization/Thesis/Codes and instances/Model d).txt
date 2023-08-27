@@ -1,0 +1,439 @@
+from docplex.mp.model import Model
+#from docplex.mp.solution import SolutionPool as solpool
+#from docplex.mp.progress import _TProgressData_ as progress
+from docplex.cp.model import CpoModel
+import pandas as pd
+import numpy as np
+from munkres import Munkres, print_matrix
+import numpy as np
+
+def munkres_method(matrix):
+    m = Munkres()
+    indexes = m.compute(matrix)
+    #print_matrix(matrix, msg='Lowest cost through this matrix:')
+    total = 0
+    values = dict()
+    for row, column in indexes:
+        value = matrix[row][column]
+        values[(row,column)] = value
+        total += value
+
+    values = sorted(values.items(), key=lambda x: x[1], reverse=False)
+    #print("values in munkres", values)
+    #for i in values:
+     #   print(i)
+        #print(f'({row}, {column}) -> {value}')
+    #print(f'Minimum cost: {total}')
+    return total, values
+
+def create_matrix(file):
+    open_inst = open(file)
+    matrix = list()
+    for line in open_inst:
+        line=line.rstrip().split()
+        for i in range(len(line)):
+            line[i] = int(line[i])
+        matrix.append(line)
+    return matrix
+
+def create_and_solve_model_old(n, k, M, costs, greater_0,relaxed = False,output=False):
+    origins = [i for i in range(n)]
+    destins = [i for i in range(n)]
+    mdl = Model('BAP')
+
+
+    mdl.set_time_limit(1800)
+
+    o = mdl.binary_var_dict(origins, name="o")
+    d = mdl.binary_var_dict(destins, name="d")
+    #u = mdl.integer_var_dict(origins, name="u", lb = 0)
+    #v = mdl.integer_var_dict(destins, name="v", lb = 0)
+    u = mdl.continuous_var_dict(origins, name="u", lb=0)
+    v = mdl.continuous_var_dict(destins, name="v", lb=0)
+
+    mdl.maximize(mdl.sum(u[i] for i in origins) + mdl.sum(v[j] for j in destins))
+
+    for i in origins:
+        mdl.add_constraint(u[i] <= o[i] * M)
+
+    for j in destins:
+        mdl.add_constraint(v[j] <= d[j] * M)
+
+    for i in origins:
+        for j in destins:
+            mdl.add_constraint(u[i] + v[j] <= costs[i][j] + M * (2 - o[i] - d[j]))
+
+    mdl.add_constraint(mdl.sum(o[i] for i in origins) == k)
+    mdl.add_constraint(mdl.sum(d[j] for j in destins) == k)
+
+    print("k = ",k)
+
+    solution = mdl.solve(log_output=output)
+
+    if output == True:
+        print(solution.display())
+    # print(mdl.export_to_string())
+    sol_value = round(solution.objective_value)
+
+    print("Solution: ", sol_value)
+    sol_status = solution.solve_details.status_code
+
+    if sol_status == 101:
+        print("YES, OPTIMAL FOUND")
+        status = 1
+    else:
+        print("Not confirmed to be optimal")
+        status = 0
+
+    time = round(solution.solve_details.time, 2)
+
+    print("time ", time)
+
+    rel_gap = round(solution.solve_details.gap, 4)
+
+    # gap : This property returns the MIP relative gap.
+    # from http://ibmdecisionoptimization.github.io/docplex-doc/mp/docplex.mp.sdetails.html#docplex.mp.sdetails.SolveDetails.mip_relative_gap
+
+    print("Relative gap = ", rel_gap)
+
+    # print("Relative gap = ", rel_gap)
+    nb_its = solution.solve_details.nb_iterations
+    print("Iterations", nb_its)
+    print("-----------------------------------------------------")
+
+    return sol_value, time, nb_its, status, rel_gap
+
+def create_and_solve_model(n, k, M, costs,greater_0,time_limit, output=False):
+
+    origins = [i for i in range(n)]
+    destins = [i for i in range(n)]
+    mdl = Model('BAP')
+
+    mdl.set_time_limit(time_limit)
+
+
+    o = mdl.binary_var_dict(origins, name="o")
+    d = mdl.binary_var_dict(destins, name="d")
+
+    if greater_0 == True:
+        u = mdl.continuous_var_dict(origins, name="u", lb=0)
+        v = mdl.continuous_var_dict(destins, name="v", lb=0)
+
+    else:
+        u = mdl.continuous_var_dict(origins, name="u", lb=-M)
+        v = mdl.continuous_var_dict(destins, name="v", lb=-M)
+
+
+    mdl.maximize(mdl.sum(u[i] for i in origins) + mdl.sum(v[j] for j in destins))
+
+    for i in origins:
+        mdl.add_constraint(u[i] <= o[i] * M)
+
+    for j in destins:
+        mdl.add_constraint(v[j] <= d[j] * M)
+
+    for i in origins:
+        for j in destins:
+            mdl.add_constraint(u[i] + v[j] <= costs[i][j] + M * (2 - o[i] - d[j]))
+
+    mdl.add_constraint(mdl.sum(o[i] for i in origins) == k)
+    mdl.add_constraint(mdl.sum(d[j] for j in destins) == k)
+
+    print("k = ",k)
+
+    #print("Improved model:")
+    solution = mdl.solve(log_output=output)
+
+    # if output == True:
+    # print(mdl.export_to_string())
+
+    print("New improved model")
+    if output == True:
+        print(solution.display())
+
+    sol_value = round(solution.objective_value)
+
+    print("Solution: ", sol_value)
+    sol_status = solution.solve_details.status_code
+
+    if sol_status == 101 or sol_status==1 or sol_status==102:
+        print("Optimal")
+        status = 1
+    else:
+        print("Not confirmed to be optimal")
+        status = 0
+
+    time = round(solution.solve_details.time, 2)
+
+    print("Time ", time)
+
+    rel_gap = round(solution.solve_details.gap, 4)
+
+    # gap : This property returns the MIP relative gap.
+    # from http://ibmdecisionoptimization.github.io/docplex-doc/mp/docplex.mp.sdetails.html#docplex.mp.sdetails.SolveDetails.mip_relative_gap
+
+    print("Relative gap = ", rel_gap)
+
+    # print("Relative gap = ", rel_gap)
+    nb_its = solution.solve_details.nb_iterations
+
+    print("Iterations", nb_its)
+    print("-----------------------------------------------------")
+
+    o_values = list(solution.get_value_dict(o,False).keys())
+    print("o values")
+    print(o_values)
+    d_values = list(solution.get_value_dict(d, False).keys())
+    print("d values")
+    print(d_values)
+
+    return sol_value, time, nb_its, status, rel_gap, o_values, d_values
+
+def create_and_solve_ap(n,costs, output=False):
+
+    origins = [i for i in range(n)]
+    destins = [i for i in range(n)]
+    mdl = Model('BAP')
+
+
+    mdl.set_time_limit(60)
+
+    x = {(i, j): mdl.continuous_var(name='x_{0}_{1}'.format(i, j)) for i in origins for j in destins}
+    #x = mdl.continuous_var_dict(origins, name="x")
+
+
+    mdl.minimize(mdl.sum(x[i,j]* costs[i][j] for i in origins for j in destins))
+
+    for i in origins:
+        mdl.add_constraint(mdl.sum(x[i,j] for j in destins) == 1)
+
+    for j in destins:
+        mdl.add_constraint(mdl.sum(x[i,j] for i in origins) == 1)
+
+    for i in origins:
+        for j in destins:
+            mdl.add_constraint(x[i,j] >= 0)
+
+
+    solution = mdl.solve(log_output=output)
+
+    #if output == True:
+     #   print(mdl.export_to_string())
+
+    print(solution.display())
+
+    sol_value = round(solution.objective_value)
+
+    print("Solution: ", sol_value)
+    sol_status = solution.solve_details.status_code
+
+    print("Solution status ")
+    print(solution.solve_details.status)
+    print(sol_status)
+    if sol_status == 101:
+        print("YES, OPTIMAL FOUND")
+        status = 1
+    else:
+        print("Not confirmed to be optimal")
+        status = 0
+
+    time = round(solution.solve_details.time, 2)
+
+    print("time ", time)
+
+    rel_gap = round(solution.solve_details.gap, 6)
+
+    # gap : This property returns the MIP relative gap.
+    # from http://ibmdecisionoptimization.github.io/docplex-doc/mp/docplex.mp.sdetails.html#docplex.mp.sdetails.SolveDetails.mip_relative_gap
+
+    print("Relative gap = ", rel_gap)
+
+    # print("Relative gap = ", rel_gap)
+    nb_its = solution.solve_details.nb_iterations
+    print("Iterations", nb_its)
+    print("-----------------------------------------------------")
+
+    return sol_value, time, nb_its, status, rel_gap
+
+def results_to_Excel(results, times, its, is_opt, gaps):
+
+    results_dict,times_dict, its_dict,is_opt_dict,gaps_dict,columns = dict(),dict(),dict(),dict(),dict(),list()
+
+    for k_i in ks:
+        columns.append("k = " + str(k_i))
+
+    for i in range(len(results)):
+        results_dict[columns[i]] = results[i]
+
+    for i in range(len(times)):
+        times_dict[columns[i]] = times[i]
+
+    for i in range(len(its)):
+        its_dict[columns[i]] = its[i]
+
+    for i in range(len(is_opt)):
+        is_opt_dict[columns[i]] = is_opt[i]
+
+    for i in range(len(gaps)):
+        gaps_dict[columns[i]] = gaps[i]
+
+    #print(min_costs_dict)
+    df = pd.DataFrame(results_dict, columns = columns)
+    df.to_excel (r'C:\Users\franc\OneDrive\Thesis\By chapter\Exact models\RM\RM Results.xlsx', index = False, header = True)
+
+    df1 = pd.DataFrame(times_dict, columns=columns)
+
+    df1.to_excel(r'C:\Users\franc\OneDrive\Thesis\By chapter\Exact models\RM\RM Times.xlsx', index=False, header=True)
+
+    df2 = pd.DataFrame(its_dict, columns=columns)
+
+    df2.to_excel(r'C:\Users\franc\OneDrive\Thesis\By chapter\Exact models\RM\RM Iterations.xlsx', index=False, header=True)
+
+    df3 = pd.DataFrame(is_opt_dict, columns=columns)
+
+    df3.to_excel(r'C:\Users\franc\OneDrive\Thesis\By chapter\Exact models\RM\RM Optimality.xlsx', index=False,
+                 header=True)
+
+    df4 = pd.DataFrame(gaps_dict, columns=columns)
+
+    df4.to_excel(r'C:\Users\franc\OneDrive\Thesis\By chapter\Exact models\RM\RM Gaps.xlsx', index=False,
+                 header=True)
+
+
+# DEFINE THE MODEL TO APPLY---------------------------------------------------------
+
+greater_0 = True
+output = False
+M = 100
+n = 10
+instances = [0]
+ks = [0]
+export_results = 1
+optimal_search = False
+
+# ---------------------------------------------------------
+
+if instances == [0]:
+    instances = [i + 1 for i in range(10)]
+
+if ks == [0]:
+    kmin = int(n/10)
+    step = int(n/10)
+    kmax = n - step
+    if n == 10:
+        kmin+=1
+
+    ks = [kmin + step * i for i in range(int((kmax - kmin) / step) + 1)]
+
+
+if n >=50:
+    time_limit = 300
+else:
+    time_limit = 60
+
+if optimal_search:
+    time_limit = 3600
+
+results, times, its, is_opt, gaps = list(), list(), list(), list(), list()
+o_values, d_values = list(), list()
+
+file0 = False
+if n == 10:
+    file0 = "Inst_10x10_"
+elif n == 30:
+    file0 = "Inst_30x30_"
+elif n == 50:
+    file0 = "Inst_50x50_"
+
+print("INFORMATION OF THE CURRENT RUN: ")
+print("n =", n)
+print("ks", ks)
+print("Instances", instances)
+print("Time limit ", time_limit)
+print("ui vj >=0: ", greater_0)
+print("Print output of CPLEX: ", output)
+print("Export results: ", export_results)
+
+print("-----------------------------------------------------\n")
+
+for instance in instances:
+    results0, times0, its0, is_opt0, gaps0, o_values0,\
+        d_values0 = list(), list(), list(), list(), list(), list(), list()
+    print("Instance ", instance)
+
+    if file0:
+        file = file0 + str(instance) + ".txt"
+        costs = create_matrix(file)
+
+
+    for k in ks:
+        x = create_and_solve_model(n, k, M, costs, greater_0, time_limit, output)
+        #x = create_and_solve_cp_unr_model(n, k, M, costs, time_limit, output)
+        current_result = x[0]
+        current_time = x[1]
+        current_its = x[2]
+        current_is_opt = x[3]
+        current_gap = x[4]
+        current_o_values = x[5]
+        current_d_values = x[6]
+
+        if greater_0:
+
+            print("Result obtained by the relaxed AP model: ", current_result)
+
+            range_n = [i for i in range(n)]
+            del_rows = np.delete(range_n,current_o_values)
+            del_cols = np.delete(range_n,current_d_values)
+
+            selected_matrix = np.delete(np.delete(costs, del_rows, 0), del_cols, 1).tolist()
+
+            #print("selected_matrix")
+            #print(selected_matrix)
+
+            real_result = munkres_method(selected_matrix)[0]
+
+            if real_result == current_result:
+                print("The real solution value is the same")
+            else:
+                print("Result obtained by the real AP model: ", real_result)
+                current_result = real_result
+
+
+        results0.append(current_result)
+        times0.append(current_time)
+        its0.append(current_its)
+        is_opt0.append(current_is_opt)
+        gaps0.append(current_gap)
+        o_values0.append(current_o_values)
+        d_values0.append(current_d_values)
+
+
+    results.append(results0)
+    times.append(times0)
+    its.append(its0)
+    is_opt.append(is_opt0)
+    gaps.append(gaps0)
+    o_values.append(o_values0)
+    d_values.append(d_values0)
+
+
+
+print("Results")
+print(np.array(results))
+print("Times")
+print(np.array(times))
+print("Iterations")
+print(np.array(its))
+print("Optimality")
+print(np.array(is_opt))
+print("Gaps")
+print(np.array(gaps))
+
+print("Selected origins")
+print(np.array(o_values))
+print("Selected destinations")
+print(np.array(d_values))
+
+if export_results == 1:
+    results_to_Excel(np.transpose(results), np.transpose(times), np.transpose(its), np.transpose(is_opt),
+                 np.transpose(gaps))
